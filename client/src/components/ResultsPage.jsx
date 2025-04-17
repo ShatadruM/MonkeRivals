@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
 import { Line } from 'react-chartjs-2';
 import { Chart, CategoryScale, LinearScale, PointElement, LineElement, Title, Tooltip, Legend } from 'chart.js';
@@ -10,6 +10,20 @@ const ResultsPage = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { wpm, accuracy, mistakes, time, graphData, isMultiplayer, opponentStats } = location.state || {};
+  const [winner, setWinner] = useState(null);
+
+  useEffect(() => {
+    // Determine winner based on WPM
+    if (isMultiplayer && opponentStats) {
+      if (wpm > opponentStats.wpm) {
+        setWinner('you');
+      } else if (wpm < opponentStats.wpm) {
+        setWinner('opponent');
+      } else {
+        setWinner('tie');
+      }
+    }
+  }, [wpm, opponentStats, isMultiplayer]);
 
   if (!wpm) {
     navigate('/');
@@ -56,6 +70,71 @@ const ResultsPage = () => {
     },
   };
 
+  // Render different result messages based on winner
+  const renderResultMessage = () => {
+    if (winner === 'you') {
+      return (
+        <div className="space-y-2">
+          <span className="text-green-400">You won! 🎉</span>
+          <div className="mt-3 p-3 bg-gray-800 rounded-lg">
+            <p className="text-base font-normal text-gray-300">
+              Congratulations! Your typing speed was impressive.
+              You were {wpm - opponentStats.wpm} WPM faster than your opponent.
+            </p>
+            <div className="flex justify-center mt-2">
+              <button 
+                onClick={() => navigate('/')} 
+                className="mt-2 bg-green-500 hover:bg-green-600 text-white px-4 py-1 rounded-lg text-sm"
+              >
+                Race Again
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    } else if (winner === 'opponent') {
+      return (
+        <div className="space-y-2">
+          <span className="text-red-400">You lost! 😢</span>
+          <div className="mt-3 p-3 bg-gray-800 rounded-lg">
+            <p className="text-base font-normal text-gray-300">
+              Don't worry! Keep practicing to improve your typing speed.
+              You were {opponentStats.wpm - wpm} WPM behind your opponent.
+            </p>
+            <div className="flex justify-center mt-2">
+              <button 
+                onClick={() => navigate('/')} 
+                className="mt-2 bg-red-500 hover:bg-red-600 text-white px-4 py-1 rounded-lg text-sm"
+              >
+                Try Again
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    } else {
+      return (
+        <div className="space-y-2">
+          <span className="text-yellow-400">It's a tie! 🤝</span>
+          <div className="mt-3 p-3 bg-gray-800 rounded-lg">
+            <p className="text-base font-normal text-gray-300">
+              Amazing! Both of you typed at exactly the same speed.
+              Try again to break the tie!
+            </p>
+            <div className="flex justify-center mt-2">
+              <button 
+                onClick={() => navigate('/')} 
+                className="mt-2 bg-yellow-500 hover:bg-yellow-600 text-white px-4 py-1 rounded-lg text-sm"
+              >
+                Break the Tie
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    }
+  };
+
   return (
     <div className="max-w-4xl mx-auto p-4">
       <motion.div
@@ -99,13 +178,7 @@ const ResultsPage = () => {
                 </div>
               </div>
               <div className="mt-4 text-center">
-                <h3 className="text-xl font-bold mb-2">
-                  {wpm > opponentStats.wpm
-                    ? 'You won! 🎉'
-                    : wpm < opponentStats.wpm
-                    ? 'You lost! 😢'
-                    : 'It\'s a tie! 🤝'}
-                </h3>
+                {renderResultMessage()}
               </div>
             </div>
           </div>

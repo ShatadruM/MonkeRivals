@@ -86,6 +86,17 @@ io.on("connection", (socket) => {
     }
   });
   
+  // Handle WPM updates
+  socket.on("wpmUpdate", (data) => {
+    const { roomId, wpm } = data;
+    if (rooms.has(roomId)) {
+      // Broadcast the WPM to the opponent
+      socket.to(roomId).emit("opponentWPM", {
+        wpm
+      });
+    }
+  });
+  
   // Handle when a player finishes typing
   socket.on("raceFinished", (data) => {
     const { roomId, stats } = data;

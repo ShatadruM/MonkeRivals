@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { io } from 'socket.io-client';
@@ -21,8 +21,40 @@ const TypingTest = ({ timeLimit = 30 }) => {
   const [opponentProgress, setOpponentProgress] = useState(0);
   const [opponentWPM, setOpponentWPM] = useState(0);
   const [currentWPM, setCurrentWPM] = useState(0);
+  const [testCompleted, setTestCompleted] = useState(false);
   const navigate = useNavigate();
   const inputRef = useRef(null);
+  const timerRef = useRef(null);
+
+  // Function to navigate to results
+  const navigateToResults = useCallback(() => {
+    const totalWords = lockedWords.length;
+    const correctWords = lockedWords.filter(
+      (entry) => entry.word === entry.input
+    ).length;
+    const accuracy = totalWords > 0 ? Math.round((correctWords / totalWords) * 100) : 0;
+    const wpm = totalWords > 0 ? Math.round((totalWords / timeLimit) * 60) : 0;
+
+    // Ensure opponent's WPM is a valid number for comparison
+    const finalOpponentWPM = opponentWPM || 0;
+
+    navigate('/results', {
+      state: {
+        wpm,
+        accuracy,
+        mistakes,
+        time: timeLimit,
+        graphData: Array.from({ length: timeLimit }, (_, i) => (i + 1) * (wpm / timeLimit)),
+        isMultiplayer,
+        opponentStats: isMultiplayer ? {
+          wpm: finalOpponentWPM,
+          accuracy: Math.round(Math.random() * 20) + 80, // Simulated accuracy if not provided
+          mistakes: Math.round((finalOpponentWPM / (wpm || 1)) * mistakes) || 0,
+          graphData: Array.from({ length: timeLimit }, (_, i) => (i + 1) * (finalOpponentWPM / timeLimit))
+        } : null
+      },
+    });
+  }, [lockedWords, mistakes, timeLimit, navigate, isMultiplayer, opponentWPM]);
 
   // Initialize socket connection
   useEffect(() => {
@@ -97,32 +129,77 @@ const TypingTest = ({ timeLimit = 30 }) => {
     };
   }, [socket, timeLimit]);
 
-  // Timer and WPM calculation
+  // Handle test completion
+  useEffect(() => {
+    if (testCompleted) {
+      // If in multiplayer mode, notify the server
+      if (isMultiplayer && socket && roomId) {
+        const totalWords = lockedWords.length;
+        const correctWords = lockedWords.filter(
+          (entry) => entry.word === entry.input
+        ).length;
+        const accuracy = totalWords > 0 ? Math.round((correctWords / totalWords) * 100) : 0;
+        const wpm = Math.round((totalWords / timeLimit) * 60);
+        
+        socket.emit('raceFinished', {
+          roomId,
+          stats: {
+            wpm,
+            accuracy,
+            mistakes
+          }
+        });
+      }
+      
+      navigateToResults();
+    }
+  }, [testCompleted, isMultiplayer, socket, roomId, lockedWords, mistakes, timeLimit, navigateToResults]);
+
+  // Timer countdown - keep it simple
   useEffect(() => {
     if (isTestRunning && timeLeft > 0) {
-      const timer = setInterval(() => {
-        setTimeLeft((prev) => prev - 1);
-        
-        // Calculate current WPM
-        const elapsedMinutes = (timeLimit - timeLeft + 1) / 60;
-        const wordsTyped = lockedWords.length;
-        const currentWPM = Math.round(wordsTyped / elapsedMinutes);
-        setCurrentWPM(currentWPM);
-        
-        // Send WPM updates in multiplayer mode
-        if (isMultiplayer && socket && roomId) {
-          socket.emit('wpmUpdate', {
-            roomId,
-            wpm: currentWPM
-          });
-        }
+      timerRef.current = setInterval(() => {
+        setTimeLeft(prev => prev - 1);
       }, 1000);
-      
-      return () => clearInterval(timer);
-    } else if (timeLeft === 0) {
-      handleTestCompletion();
+    } 
+    
+    return () => {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+    };
+  }, [isTestRunning]);
+
+  // Check if time is up
+  useEffect(() => {
+    if (timeLeft === 0 && isTestRunning && !testCompleted) {
+      if (timerRef.current) {
+        clearInterval(timerRef.current);
+        timerRef.current = null;
+      }
+      setTestCompleted(true);
     }
-  }, [isTestRunning, timeLeft, lockedWords.length, timeLimit, isMultiplayer, socket, roomId]);
+  }, [timeLeft, isTestRunning, testCompleted]);
+
+  // WPM calculation
+  useEffect(() => {
+    if (!isTestRunning) return;
+    
+    // Calculate current WPM
+    const elapsedMinutes = (timeLimit - timeLeft) / 60 || 0.01; // Avoid division by zero
+    const wordsTyped = lockedWords.length;
+    const currentWPM = Math.round(wordsTyped / elapsedMinutes);
+    setCurrentWPM(currentWPM);
+    
+    // Send WPM updates in multiplayer mode
+    if (isMultiplayer && socket && roomId && currentWPM > 0) {
+      socket.emit('wpmUpdate', {
+        roomId,
+        wpm: currentWPM
+      });
+    }
+  }, [lockedWords.length, timeLeft, isTestRunning, timeLimit, isMultiplayer, socket, roomId]);
 
   const handleInputChange = (e) => {
     const value = e.target.value;
@@ -160,6 +237,7 @@ const TypingTest = ({ timeLimit = 30 }) => {
     setLockedWords([]);
     setMistakes(0);
     setCurrentInput('');
+    setTestCompleted(false);
     // Focus the input field
     if (inputRef.current) inputRef.current.focus();
   };
@@ -169,44 +247,6 @@ const TypingTest = ({ timeLimit = 30 }) => {
       setInMatchmaking(true);
       socket.emit('requestMatch');
     }
-  };
-
-  const handleTestCompletion = () => {
-    const totalWords = lockedWords.length;
-    const correctWords = lockedWords.filter(
-      (entry) => entry.word === entry.input
-    ).length;
-    const accuracy = Math.round((correctWords / totalWords) * 100);
-    const wpm = Math.round((totalWords / timeLimit) * 60);
-
-    // If in multiplayer mode, notify the server
-    if (isMultiplayer && socket && roomId) {
-      socket.emit('raceFinished', {
-        roomId,
-        stats: {
-          wpm,
-          accuracy,
-          mistakes
-        }
-      });
-    }
-
-    navigate('/results', {
-      state: {
-        wpm,
-        accuracy,
-        mistakes,
-        time: timeLimit,
-        graphData: Array.from({ length: timeLimit }, (_, i) => (i + 1) * (wpm / timeLimit)),
-        isMultiplayer,
-        opponentStats: isMultiplayer ? {
-          wpm: opponentWPM,
-          accuracy: Math.round(Math.random() * 20) + 80, // Simulated accuracy if not provided
-          mistakes: Math.round((opponentWPM / wpm) * mistakes),
-          graphData: Array.from({ length: timeLimit }, (_, i) => (i + 1) * (opponentWPM / timeLimit))
-        } : null
-      },
-    });
   };
 
   const renderWordFeedback = (word, input) => {
