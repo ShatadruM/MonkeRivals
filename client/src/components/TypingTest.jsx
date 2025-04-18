@@ -36,7 +36,9 @@ const TypingTest = ({ timeLimit = 30 }) => {
     const wpm = totalWords > 0 ? Math.round((totalWords / timeLimit) * 60) : 0;
 
     // Ensure opponent's WPM is a valid number for comparison
-    const finalOpponentWPM = opponentWPM || 0;
+    const finalOpponentWPM = Math.round(opponentWPM);
+    
+    console.log('Navigating to results with opponent WPM:', finalOpponentWPM);
 
     navigate('/results', {
       state: {
@@ -46,15 +48,18 @@ const TypingTest = ({ timeLimit = 30 }) => {
         time: timeLimit,
         graphData: Array.from({ length: timeLimit }, (_, i) => (i + 1) * (wpm / timeLimit)),
         isMultiplayer,
+        playerColor: isMultiplayer ? (socket?.playerColor || 'blue') : null,
         opponentStats: isMultiplayer ? {
           wpm: finalOpponentWPM,
-          accuracy: Math.round(Math.random() * 20) + 80, // Simulated accuracy if not provided
+          accuracy: socket?.opponentAccuracy || Math.round(Math.random() * 20) + 80, // Use real accuracy if available
           mistakes: Math.round((finalOpponentWPM / (wpm || 1)) * mistakes) || 0,
-          graphData: Array.from({ length: timeLimit }, (_, i) => (i + 1) * (finalOpponentWPM / timeLimit))
+          graphData: Array.from({ length: timeLimit }, (_, i) => (i + 1) * (finalOpponentWPM / timeLimit)),
+          finished: socket?.opponentFinished || false,
+          isRaceEnded: true
         } : null
       },
     });
-  }, [lockedWords, mistakes, timeLimit, navigate, isMultiplayer, opponentWPM]);
+  }, [lockedWords, mistakes, timeLimit, navigate, isMultiplayer, opponentWPM, socket]);
 
   // Initialize socket connection
   useEffect(() => {
@@ -84,6 +89,12 @@ const TypingTest = ({ timeLimit = 30 }) => {
       setWords(data.text.split(' '));
       setIsTestRunning(true);
       setTimeLeft(timeLimit);
+      
+      // Determine player color based on position in the room
+      const isFirstPlayer = data.players[0] === socket.id;
+      const playerColor = isFirstPlayer ? 'blue' : 'red';
+      socket.playerColor = playerColor; // Store on socket for later use
+      
       // Focus the input field
       if (inputRef.current) inputRef.current.focus();
     });
@@ -95,7 +106,33 @@ const TypingTest = ({ timeLimit = 30 }) => {
 
     // Handle opponent WPM updates
     socket.on('opponentWPM', (data) => {
+      console.log('Received opponent WPM:', data.wpm);
       setOpponentWPM(data.wpm);
+      
+      // Store additional opponent data if available
+      if (data.accuracy) {
+        socket.opponentAccuracy = data.accuracy;
+      }
+      if (data.finished) {
+        socket.opponentFinished = true;
+      }
+      
+      // If test is completed, update results with latest opponent WPM
+      if (testCompleted) {
+        navigateToResults();
+      }
+    });
+
+    // Handle wpmUpdates (broadcast to all)
+    socket.on('wpmUpdates', (data) => {
+      // Find opponent's WPM from the playerWPM object
+      if (data.playerWPM) {
+        const opponentId = Object.keys(data.playerWPM).find(id => id !== socket.id);
+        if (opponentId && data.playerWPM[opponentId]) {
+          console.log(`Received WPM update via wpmUpdates: ${data.playerWPM[opponentId]} WPM from ${opponentId}`);
+          setOpponentWPM(data.playerWPM[opponentId]);
+        }
+      }
     });
 
     // Handle opponent disconnected
@@ -107,8 +144,13 @@ const TypingTest = ({ timeLimit = 30 }) => {
 
     // Handle opponent finished
     socket.on('opponentFinished', (data) => {
-      // Show opponent's stats
-      // Continue the game for this player
+      // Update opponent WPM with the final value
+      setOpponentWPM(data.wpm);
+      
+      // If this player has also finished, navigate to results
+      if (testCompleted) {
+        navigateToResults();
+      }
     });
 
     // Handle room closed
@@ -118,13 +160,36 @@ const TypingTest = ({ timeLimit = 30 }) => {
       setWaitingForOpponent(false);
     });
 
+    // Handle race ended event with complete results
+    socket.on('raceEnded', (results) => {
+      // Store complete race results
+      socket.raceResults = results;
+      
+      // Find opponent data
+      if (results.players && results.players.length > 0) {
+        const opponentData = results.players.find(player => player.id !== socket.id);
+        if (opponentData) {
+          setOpponentWPM(opponentData.wpm);
+          socket.opponentAccuracy = opponentData.accuracy || 90; // default if not provided
+          socket.opponentFinished = opponentData.finished || false;
+        }
+      }
+      
+      // If test is already completed, navigate to results with updated data
+      if (testCompleted) {
+        navigateToResults();
+      }
+    });
+
     return () => {
       socket.off('waitingForOpponent');
       socket.off('matchStart');
       socket.off('opponentCursor');
       socket.off('opponentWPM');
+      socket.off('wpmUpdates');
       socket.off('opponentDisconnected');
       socket.off('opponentFinished');
+      socket.off('raceEnded');
       socket.off('roomClosed');
     };
   }, [socket, timeLimit]);
@@ -194,6 +259,7 @@ const TypingTest = ({ timeLimit = 30 }) => {
     
     // Send WPM updates in multiplayer mode
     if (isMultiplayer && socket && roomId && currentWPM > 0) {
+      console.log(`Sending my WPM update: ${currentWPM} WPM`);
       socket.emit('wpmUpdate', {
         roomId,
         wpm: currentWPM
